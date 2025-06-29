@@ -13,13 +13,25 @@ from pytrace.const import DEFAULT_NUMBER_OF_QUERIES
 from pytrace.const import DEFAULT_PORT
 
 
-def send_pings(
+def _get_address_family_from_ip_address(ip_address: str) -> socket.AddressFamily:
+    import ipaddress
+
+    parsed_address = ipaddress.ip_address(ip_address)
+
+    return (
+        socket.AF_INET
+        if isinstance(parsed_address, ipaddress.IPv4Address)
+        else socket.AF_INET6
+    )
+
+
+def _send_pings(
     address_family: socket.AddressFamily,
-    iface: str | None,
     first_ttl: int,
     max_ttl: int,
     port: int,
     nqueries: int,
+    src_addr: str | None,
 ) -> None:
     # Create the socket
     sock = socket.socket(address_family, socket.SOCK_DGRAM)
@@ -33,7 +45,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         "-s",
         "--src_addr",
         type=str,
-        action="store_const",
         help=(
             "Use the following IP address (which must be given as an IP number, not a hostname) as the source address in outgoing probe packets.  On hosts with more than one IP address, this option"
             "can be used to force the source address to be something other than the IP address of the interface the probe packet is sent on.  If the IP address is not one of this machine's interface"
@@ -46,7 +57,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "-f",
         "--first_ttl",
         type=int,
-        action="store_const",
+        # action="store_const",
         help=(
             "Set the initial time-to-live used in the first outgoing probe packet."
             "The default is 1, .i.e., start with the first hop"
@@ -58,7 +69,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         "-m",
         "--max_ttl",
         type=int,
-        action="store_const",
         help=(
             "Set the max time-to-live (max number of hops) used in outgoing probe"
             " packets. The default is net.inet.ip.ttl hops."
@@ -70,7 +80,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         "-p",
         "--port",
         type=int,
-        action="store_const",
         help=(f"Sets the base port used in probes (default is {DEFAULT_PORT})."),
         default=f"{DEFAULT_PORT}",
     )
@@ -79,7 +88,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         "-q",
         "--nqueries",
         type=int,
-        action="store_const",
         help=(
             "Set the number of queries per 'ttl' to nqueries"
             f" (default is {DEFAULT_NUMBER_OF_QUERIES} probes)"
@@ -89,15 +97,22 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     args = parser.parse_args()
 
-    address_family: socket.AddressFamily = (
-        socket.AF_INET6 if args.ipv6 else socket.AF_INET
-    )
+    src_addr: str | None = args.src_addr
+    try:
+        address_family: socket.AddressFamily = (
+            socket.AF_INET
+            if src_addr is None
+            else _get_address_family_from_ip_address(src_addr)
+        )
+    except ValueError:
+        parser.print_help()
+        sys.exit(1)
 
-    send_pings(
+    _send_pings(
         address_family=address_family,
-        iface=args.iface,
         first_ttl=args.first_ttl,
         max_ttl=args.max_ttl,
         port=args.port,
         nqueries=args.nqueries,
+        src_addr=src_addr,
     )
