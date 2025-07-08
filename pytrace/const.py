@@ -2,8 +2,6 @@ import socket
 
 from typing import Final
 
-DEFAULT_PORT: Final[int] = 33_434
-
 DEFAULT_NUMBER_OF_QUERIES: Final[int] = 3
 
 DEFAULT_RESPONSE_WAIT_TIME_SEC: Final[int] = 5

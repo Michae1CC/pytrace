@@ -8,73 +8,13 @@ import time
 
 from collections.abc import Sequence
 
-from typing import Final
-from typing import Literal
-
 from pytrace.const import DEFAULT_MAX_TTL
 from pytrace.const import DEFAULT_NUMBER_OF_QUERIES
 from pytrace.const import DEFAULT_RESPONSE_WAIT_TIME_SEC
 from pytrace.const import DEFAULT_PAUSE_TIME_MSEC
-from pytrace.const import DEFAULT_PORT
 
-
-class ICMPEchoMessage:
-
-    _ICMP_ECHO_CODE: Final[int] = 8
-
-    def __init__(self, identifier: int, sequence_number: int) -> None:
-        self._identifier = identifier
-        self._sequence_number = sequence_number
-
-    @classmethod
-    def _compute_icmp_checksum(cls, icmp_packet_bytes: bytes) -> int:
-        sum = 0
-        count_to = (len(icmp_packet_bytes) // 2) * 2
-        lo_byte: int = 0
-        hi_byte: int = 0
-        for count in range(0, count_to, 2):
-            if sys.byteorder == "little":
-                lo_byte = icmp_packet_bytes[count]
-                hi_byte = icmp_packet_bytes[count + 1]
-            else:
-                lo_byte = icmp_packet_bytes[count + 1]
-                hi_byte = icmp_packet_bytes[count]
-            this_val = hi_byte * 256 + lo_byte
-            sum = sum + this_val
-            sum = sum & 0xFFFFFFFF
-
-        if count_to < len(icmp_packet_bytes):
-            sum = sum + icmp_packet_bytes[len(icmp_packet_bytes) - 1]
-            sum = sum & 0xFFFFFFFF
-
-        sum = (sum >> 16) + (sum & 0xFFFF)
-        sum = sum + (sum >> 16)
-        answer = ~sum
-        answer = answer & 0xFFFF
-        answer = answer >> 8 | (answer << 8 & 0xFF00)
-        return answer
-
-    def __bytes__(self) -> bytes:
-        packet_data: bytes = b"\0" * 20
-        initial_checksum: int = 0
-        header_for_checksum: bytes = struct.pack(
-            "!BBHHH",
-            self._ICMP_ECHO_CODE,
-            0,
-            initial_checksum,
-            self._identifier,
-            self._sequence_number,
-        )
-        checksum = self._compute_icmp_checksum(bytes(header_for_checksum) + packet_data)
-        header: bytes = struct.pack(
-            "!BBHHH",
-            self._ICMP_ECHO_CODE,
-            0,
-            checksum,
-            self._identifier,
-            self._sequence_number,
-        )
-        return bytes(header) + packet_data
+from ._icmp import create_icmp_echo_message
+from ._icmp import get_icmp_header_values
 
 
 def _get_address_family_from_ip_address(ip_address: str) -> socket.AddressFamily:
@@ -89,16 +29,21 @@ def _get_address_family_from_ip_address(ip_address: str) -> socket.AddressFamily
     )
 
 
+def _get_dns_name_from_ip_address(ip_address: str) -> str:
+    DEFAULT_NAME_INFO_FLAGS = 0
+    host_dns_name, _ = socket.getnameinfo((ip_address, 0), DEFAULT_NAME_INFO_FLAGS)
+    return host_dns_name
+
+
 def _send_pings(
     address_family: socket.AddressFamily,
     first_ttl: int,
     max_ttl: int,
-    port: int,
     nqueries: int,
     wait_time: int,
     pause_msec: int,
     host: str,
-    packet_length: int | None,
+    packet_length: int,
     src_addr: str | None,
 ) -> None:
     socket_protocol: int = (
@@ -106,13 +51,9 @@ def _send_pings(
         if address_family == socket.AF_INET
         else socket.IPPROTO_ICMPV6
     )
-    # print(f"socket.AF_INET {socket.AF_INET}")
-    # print(f"socket.AF_INET6 {socket.AF_INET6}")
-    # print(f"socket.IPPROTO_ICMP {socket.IPPROTO_ICMP}")
-    # print(f"socket.IPPROTO_ICMPV6 {socket.IPPROTO_ICMPV6}")
 
-    # print(address_family)
-    # print(socket_protocol)
+    ip_header_size = 20
+    icmp_echo_message_reply_header_size = 8
 
     print(
         f"pytrace to {host} ({host}), {max_ttl} hops max, {packet_length} bytes packets"
@@ -122,48 +63,63 @@ def _send_pings(
 
         got_to_dest: bool = False
 
-        print(f"{ttl}", end=" ")
+        print(f"{ttl}", end="  ")
 
         # Create the socket
         with socket.socket(address_family, socket.SOCK_DGRAM, socket_protocol) as sock:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
-            icmp_echo_message = ICMPEchoMessage(identifier=1, sequence_number=0)
-            sock.settimeout(1)  # Timeout for receiving reply
+            sock.settimeout(wait_time)
 
-            for prod_num in range(nqueries):
+            icmp_echo_message = create_icmp_echo_message(
+                identifier=1,
+                sequence_number=0,
+                packet_data=(
+                    packet_length - ip_header_size - icmp_echo_message_reply_header_size
+                )
+                * b"\x00",
+            )
 
-                if prod_num != 0:
+            for probe_num in range(nqueries):
+
+                if probe_num != 0:
                     time.sleep(pause_msec)
 
                 packet_sent_time: float = time.perf_counter()
                 sock.sendto(bytes(icmp_echo_message), (host, 0))
 
                 try:
-                    recv_packet, addr = sock.recvfrom(1024)
+                    recv_packet, (response_server_ip_address, _) = sock.recvfrom(1024)
                     packet_received_time: float = time.perf_counter()
                 except socket.timeout:
-                    print(" *", end="")
+                    print("*", end="  ", flush=True)
                     continue
 
                 # https://datatracker.ietf.org/doc/html/rfc791#section-3.1
-                ip_header: bytes = recv_packet[0:20]
-                ip_header_struct = struct.unpack("!BBHHHBBH4s4s", ip_header)
-                icmp_header = recv_packet[20:28]  # ICMP header is usually 20 bytes
-                icmp_type, icmp_code, _, _, _ = struct.unpack("!BBHHH", icmp_header)
+                icmp_echo_message_reply_header_slice = slice(
+                    ip_header_size,
+                    ip_header_size + icmp_echo_message_reply_header_size,
+                )
+                icmp_header: bytes = recv_packet[icmp_echo_message_reply_header_slice]
+                icmp_response_header_values = get_icmp_header_values(icmp_header)
 
-                source_address = socket.inet_ntoa(ip_header_struct[8])
+                src_dns_name = _get_dns_name_from_ip_address(response_server_ip_address)
+                src_display_name = src_dns_name or response_server_ip_address
 
-                if prod_num == 0:
-                    print(f"{source_address} ({source_address})", end=" ")
+                if probe_num == 0:
+                    print(
+                        f"{src_display_name} ({response_server_ip_address})",
+                        end="  ",
+                    )
 
                 print(
                     "{:.3f} ms".format(
                         (packet_received_time - packet_sent_time) * 1000
                     ),
-                    end=" ",
+                    end="  ",
+                    flush=True,
                 )
 
-                if icmp_type == 0:
+                if icmp_response_header_values["type"] == 0:
                     got_to_dest = True
 
         print()
@@ -221,15 +177,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     parser.add_argument(
-        "-p",
-        type=int,
-        help=(f"Sets the base port used in probes (default is {DEFAULT_PORT})."),
-        default=f"{DEFAULT_PORT}",
-        metavar="port",
-        dest="port",
-    )
-
-    parser.add_argument(
         "-q",
         type=int,
         help=(
@@ -271,8 +218,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "packet_length",
         nargs="?",
-        type=str,
-        default=40,
+        type=int,
+        default=48,
     )
 
     args = parser.parse_args()
@@ -292,7 +239,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         address_family=address_family,
         first_ttl=args.first_ttl,
         max_ttl=args.max_ttl,
-        port=args.port,
         nqueries=args.nqueries,
         wait_time=args.wait_time,
         pause_msec=args.pause_msecs,
