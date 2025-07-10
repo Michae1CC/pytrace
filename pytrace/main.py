@@ -8,6 +8,8 @@ import time
 
 from collections.abc import Sequence
 
+from typing import cast
+
 from pytrace.const import DEFAULT_MAX_TTL
 from pytrace.const import DEFAULT_NUMBER_OF_QUERIES
 from pytrace.const import DEFAULT_RESPONSE_WAIT_TIME_SEC
@@ -22,11 +24,32 @@ def _get_address_family_from_ip_address(ip_address: str) -> socket.AddressFamily
 
     parsed_address = ipaddress.ip_address(ip_address)
 
-    return (
-        socket.AF_INET
-        if isinstance(parsed_address, ipaddress.IPv4Address)
-        else socket.AF_INET6
-    )
+    if isinstance(parsed_address, ipaddress.IPv4Address):
+        return socket.AF_INET
+    elif isinstance(parsed_address, ipaddress.IPv6Address):
+        return socket.AF_INET6
+    
+    raise ValueError("Unrecognised address family")
+
+def _is_ip_address(host: str) -> bool:
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    
+    return True
+
+def _get_host_ip_addr(host: str, family: socket.AddressFamily) -> str:
+    addr_info = socket.getaddrinfo(host, 0, family=socket.AF_INET)
+
+    if len(addr_info) == 0:
+        raise ValueError(f"Could not find an address for {host}")
+
+    (_, _, _, _, (ip_addr, _)) = addr_info[0]
+
+    return cast(str, ip_addr)
 
 
 def _get_dns_name_from_ip_address(ip_address: str) -> str:
@@ -55,10 +78,6 @@ def _send_pings(
     ip_header_size = 20
     icmp_echo_message_reply_header_size = 8
 
-    print(
-        f"pytrace to {host} ({host}), {max_ttl} hops max, {packet_length} bytes packets"
-    )
-
     for ttl in range(first_ttl, max_ttl + 1):
 
         got_to_dest: bool = False
@@ -66,7 +85,7 @@ def _send_pings(
         print(f"{ttl}", end="  ")
 
         # Create the socket
-        with socket.socket(address_family, socket.SOCK_DGRAM, socket_protocol) as sock:
+        with socket.socket(address_family, socket.SOCK_RAW, socket_protocol) as sock:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
             sock.settimeout(wait_time)
 
@@ -235,6 +254,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
+    host_ip_addr = args.host if _is_ip_address(args.host) else _get_host_ip_addr("tropofy.dev", address_family)
+
+    print(
+        f"pytrace to {args.host} ({host_ip_addr}), {args.max_ttl} hops max, {args.packet_length} bytes packets"
+    )
+
     _send_pings(
         address_family=address_family,
         first_ttl=args.first_ttl,
@@ -242,7 +267,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         nqueries=args.nqueries,
         wait_time=args.wait_time,
         pause_msec=args.pause_msecs,
-        host=args.host,
+        host=host_ip_addr,
         packet_length=args.packet_length,
         src_addr=src_addr,
     )
