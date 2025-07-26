@@ -15,6 +15,7 @@ from pytrace.const import DEFAULT_NUMBER_OF_QUERIES
 from pytrace.const import DEFAULT_RESPONSE_WAIT_TIME_SEC
 from pytrace.const import DEFAULT_PAUSE_TIME_MSEC
 
+from ._icmp import ICMPTypes
 from ._icmp import create_icmp_echo_message
 from ._icmp import get_icmp_header_values
 
@@ -28,8 +29,9 @@ def _get_address_family_from_ip_address(ip_address: str) -> socket.AddressFamily
         return socket.AF_INET
     elif isinstance(parsed_address, ipaddress.IPv6Address):
         return socket.AF_INET6
-    
+
     raise ValueError("Unrecognised address family")
+
 
 def _is_ip_address(host: str) -> bool:
     import ipaddress
@@ -38,11 +40,15 @@ def _is_ip_address(host: str) -> bool:
         ipaddress.ip_address(host)
     except ValueError:
         return False
-    
+
     return True
 
+
 def _get_host_ip_addr(host: str, family: socket.AddressFamily) -> str:
-    addr_info = socket.getaddrinfo(host, 0, family=socket.AF_INET)
+    addr_info = cast(
+        list[tuple[socket.AddressFamily, socket.SocketKind, int, str, tuple[str, int]]],
+        socket.getaddrinfo(host, 0, family=socket.AF_INET),
+    )
 
     if len(addr_info) == 0:
         raise ValueError(f"Could not find an address for {host}")
@@ -78,32 +84,38 @@ def _send_pings(
     ip_header_size = 20
     icmp_echo_message_reply_header_size = 8
 
+    print(
+        f"pytrace to {host} ({host}), {max_ttl} hops max, {packet_length} bytes packets"
+    )
+
     for ttl in range(first_ttl, max_ttl + 1):
 
         got_to_dest: bool = False
 
-        print(f"{ttl}", end="  ")
-
         # Create the socket
         with socket.socket(address_family, socket.SOCK_RAW, socket_protocol) as sock:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
-            sock.settimeout(wait_time)
 
-            icmp_echo_message = create_icmp_echo_message(
-                identifier=1,
-                sequence_number=0,
-                packet_data=(
-                    packet_length - ip_header_size - icmp_echo_message_reply_header_size
-                )
-                * b"\x00",
-            )
+            print(f"{ttl}", end="  ")
 
             for probe_num in range(nqueries):
+
+                icmp_echo_message = create_icmp_echo_message(
+                    identifier=1 + probe_num,
+                    sequence_number=0,
+                    packet_data=(
+                        packet_length
+                        - ip_header_size
+                        - icmp_echo_message_reply_header_size
+                    )
+                    * b"\x00",
+                )
 
                 if probe_num != 0:
                     time.sleep(pause_msec)
 
                 packet_sent_time: float = time.perf_counter()
+                # Ports are not used for ICMP messages, just use a port of 0
                 sock.sendto(bytes(icmp_echo_message), (host, 0))
 
                 try:
@@ -138,13 +150,13 @@ def _send_pings(
                     flush=True,
                 )
 
-                if icmp_response_header_values["type"] == 0:
+                if icmp_response_header_values["type"] == ICMPTypes.ECHO_REPLY_MESSAGE:
                     got_to_dest = True
 
-        print()
+            print()
 
-        if got_to_dest:
-            break
+            if got_to_dest:
+                break
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -254,7 +266,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         parser.print_help()
         sys.exit(1)
 
-    host_ip_addr = args.host if _is_ip_address(args.host) else _get_host_ip_addr("tropofy.dev", address_family)
+    host_ip_addr = (
+        args.host
+        if _is_ip_address(args.host)
+        else _get_host_ip_addr("tropofy.dev", address_family)
+    )
 
     print(
         f"pytrace to {args.host} ({host_ip_addr}), {args.max_ttl} hops max, {args.packet_length} bytes packets"
