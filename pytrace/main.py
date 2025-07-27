@@ -8,60 +8,23 @@ import time
 
 from collections.abc import Sequence
 
-from typing import cast
-
 from pytrace.const import DEFAULT_MAX_TTL
 from pytrace.const import DEFAULT_NUMBER_OF_QUERIES
 from pytrace.const import DEFAULT_RESPONSE_WAIT_TIME_SEC
 from pytrace.const import DEFAULT_PAUSE_TIME_MSEC
+from pytrace.const import ICMP_PORT
+from pytrace.const import ICMP_PORT_IPV6
 
 from ._icmp import ICMPTypes
+from ._icmp import ICMPv6Types
 from ._icmp import create_icmp_echo_message
 from ._icmp import get_icmp_header_values
 
-
-def _get_address_family_from_ip_address(ip_address: str) -> socket.AddressFamily:
-    import ipaddress
-
-    parsed_address = ipaddress.ip_address(ip_address)
-
-    if isinstance(parsed_address, ipaddress.IPv4Address):
-        return socket.AF_INET
-    elif isinstance(parsed_address, ipaddress.IPv6Address):
-        return socket.AF_INET6
-
-    raise ValueError("Unrecognised address family")
-
-
-def _is_ip_address(host: str) -> bool:
-    import ipaddress
-
-    try:
-        ipaddress.ip_address(host)
-    except ValueError:
-        return False
-
-    return True
-
-
-def _get_host_ip_addr(host: str, family: socket.AddressFamily) -> str:
-    addr_info = cast(
-        list[tuple[socket.AddressFamily, socket.SocketKind, int, str, tuple[str, int]]],
-        socket.getaddrinfo(host, 0, family=socket.AF_INET),
-    )
-
-    if len(addr_info) == 0:
-        raise ValueError(f"Could not find an address for {host}")
-
-    (_, _, _, _, (ip_addr, _)) = addr_info[0]
-
-    return cast(str, ip_addr)
-
-
-def _get_dns_name_from_ip_address(ip_address: str) -> str:
-    DEFAULT_NAME_INFO_FLAGS = 0
-    host_dns_name, _ = socket.getnameinfo((ip_address, 0), DEFAULT_NAME_INFO_FLAGS)
-    return host_dns_name
+from ._ip import get_address_family_from_ip_address
+from ._ip import get_dns_name_from_ip_address
+from ._ip import get_host_ip_addr
+from ._ip import is_ip_address
+from ._ip import is_ipv6
 
 
 def _send_pings(
@@ -76,31 +39,34 @@ def _send_pings(
     src_addr: str | None,
 ) -> None:
     socket_protocol: int = (
-        socket.IPPROTO_ICMP
-        if address_family == socket.AF_INET
-        else socket.IPPROTO_ICMPV6
+        socket.IPPROTO_ICMPV6 if is_ipv6(address_family) else socket.IPPROTO_ICMP
     )
-
-    ip_header_size = 20
+    ip_header_size: int = 40 if is_ipv6(address_family) else 20
     icmp_echo_message_reply_header_size = 8
 
     print(
         f"pytrace to {host} ({host}), {max_ttl} hops max, {packet_length} bytes packets"
     )
 
-    for ttl in range(first_ttl, max_ttl + 1):
+    # Create the socket
+    with socket.socket(address_family, socket.SOCK_RAW, socket_protocol) as sock:
 
-        got_to_dest: bool = False
+        for ttl in range(first_ttl, max_ttl + 1):
 
-        # Create the socket
-        with socket.socket(address_family, socket.SOCK_RAW, socket_protocol) as sock:
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+            got_to_dest: bool = False
+
+            sock.settimeout(wait_time)
+            # Set the time-to-live of the ip packet
+            if is_ipv6(address_family):
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IP_TTL, ttl)
+            else:
+                sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
 
             print(f"{ttl}", end="  ")
 
             for probe_num in range(nqueries):
 
-                icmp_echo_message = create_icmp_echo_message(
+                icmp_echo_message: bytes = create_icmp_echo_message(
                     identifier=1 + probe_num,
                     sequence_number=0,
                     packet_data=(
@@ -109,32 +75,55 @@ def _send_pings(
                         - icmp_echo_message_reply_header_size
                     )
                     * b"\x00",
+                    family=address_family,
                 )
 
                 if probe_num != 0:
                     time.sleep(pause_msec)
 
                 packet_sent_time: float = time.perf_counter()
-                # Ports are not used for ICMP messages, just use a port of 0
-                sock.sendto(bytes(icmp_echo_message), (host, 0))
+
+                if is_ipv6(address_family):
+                    sock.sendto(bytes(icmp_echo_message), (host, ICMP_PORT_IPV6, 0, 0))
+                else:
+                    # Ports are not used for ICMP messages, just use a port of 0
+                    sock.sendto(bytes(icmp_echo_message), (host, 0))
 
                 try:
-                    recv_packet, (response_server_ip_address, _) = sock.recvfrom(1024)
+                    (returned_data, response_server_address) = sock.recvfrom(1024)
+                    if is_ipv6(address_family):
+                        (response_server_ip_address, _, _, _) = response_server_address
+                    else:
+                        (
+                            response_server_ip_address,
+                            _,
+                        ) = response_server_address
                     packet_received_time: float = time.perf_counter()
                 except socket.timeout:
                     print("*", end="  ", flush=True)
                     continue
 
-                # https://datatracker.ietf.org/doc/html/rfc791#section-3.1
-                icmp_echo_message_reply_header_slice = slice(
-                    ip_header_size,
-                    ip_header_size + icmp_echo_message_reply_header_size,
-                )
-                icmp_header: bytes = recv_packet[icmp_echo_message_reply_header_slice]
-                icmp_response_header_values = get_icmp_header_values(icmp_header)
+                try:
+                    # https://datatracker.ietf.org/doc/html/rfc791#section-3.1
+                    icmp_echo_message_reply_header_slice: slice = slice(
+                        ip_header_size,
+                        # The type and code appear in the first 2 bytes
+                        ip_header_size + 2,
+                    )
+                    icmp_header: bytes = returned_data[
+                        icmp_echo_message_reply_header_slice
+                    ]
+                    icmp_response_header_values = get_icmp_header_values(icmp_header)
+                except struct.error:
+                    # Sometimes the ip header is stripped for us
+                    icmp_response_header_values = get_icmp_header_values(
+                        returned_data[0:2]
+                    )
 
-                src_dns_name = _get_dns_name_from_ip_address(response_server_ip_address)
-                src_display_name = src_dns_name or response_server_ip_address
+                src_dns_name: str = get_dns_name_from_ip_address(
+                    response_server_ip_address
+                )
+                src_display_name: str = src_dns_name or response_server_ip_address
 
                 if probe_num == 0:
                     print(
@@ -150,8 +139,18 @@ def _send_pings(
                     flush=True,
                 )
 
-                if icmp_response_header_values["type"] == ICMPTypes.ECHO_REPLY_MESSAGE:
-                    got_to_dest = True
+                if is_ipv6(address_family):
+                    if (
+                        icmp_response_header_values["type"]
+                        == ICMPv6Types.ECHO_REPLY_MESSAGE
+                    ):
+                        got_to_dest = True
+                else:
+                    if (
+                        icmp_response_header_values["type"]
+                        == ICMPTypes.ECHO_REPLY_MESSAGE
+                    ):
+                        got_to_dest = True
 
             print()
 
@@ -161,6 +160,8 @@ def _send_pings(
 
 def main(argv: Sequence[str] | None = None) -> None:
 
+    # python -m pytrace -q 1 -w 1 '2404:6800:4006:814::200e'
+    # python -m pytrace -q 1 -w 1 128.32.131.22
     # 128.32.131.22
 
     argv = argv if argv is not None else sys.argv[1:]
@@ -257,23 +258,20 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     src_addr: str | None = args.src_addr
     try:
-        address_family: socket.AddressFamily = (
-            socket.AF_INET
-            if src_addr is None
-            else _get_address_family_from_ip_address(src_addr)
-        )
+        address_family = socket.AF_INET6
+        # address_family: socket.AddressFamily = (
+        #     socket.AF_INET
+        #     if src_addr is None
+        #     else get_address_family_from_ip_address(src_addr)
+        # )
     except ValueError:
         parser.print_help()
         sys.exit(1)
 
-    host_ip_addr = (
+    host_ip_addr: str = (
         args.host
-        if _is_ip_address(args.host)
-        else _get_host_ip_addr("tropofy.dev", address_family)
-    )
-
-    print(
-        f"pytrace to {args.host} ({host_ip_addr}), {args.max_ttl} hops max, {args.packet_length} bytes packets"
+        if is_ip_address(args.host)
+        else get_host_ip_addr(args.host, address_family)
     )
 
     _send_pings(

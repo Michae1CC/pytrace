@@ -1,3 +1,4 @@
+import socket
 import struct
 import sys
 
@@ -5,6 +6,8 @@ from typing import Final
 from typing import TypedDict
 
 from enum import IntEnum
+
+from ._ip import is_ipv6
 
 
 class ICMPTypes(IntEnum):
@@ -18,6 +21,11 @@ class ICMPTypes(IntEnum):
     TIME_STAMP_REPLY_MESSAGE = 14
     INFORMATION_REQUEST = 15
     INFORMATION_REPLY_MESSAGE = 16
+
+
+class ICMPv6Types(IntEnum):
+    ECHO_REPLY_MESSAGE = 128
+    ECHO_MESSAGE = 129
 
 
 class ICMPCodeType(TypedDict):
@@ -54,24 +62,30 @@ def _compute_icmp_checksum(icmp_packet_bytes: bytes) -> int:
 
 
 def create_icmp_echo_message(
-    identifier: int, sequence_number: int, packet_data: bytes
+    identifier: int,
+    sequence_number: int,
+    packet_data: bytes,
+    family: socket.AddressFamily,
 ) -> bytes:
     ICMP_ECHO_MESSAGE_CODE: Final[int] = 0
+    icmp_type: ICMPTypes | ICMPv6Types = (
+        ICMPv6Types.ECHO_MESSAGE if is_ipv6(family) else ICMPTypes.ECHO_MESSAGE
+    )
     initial_checksum: int = 0
     # Create a header with the checksum value set to 0 to compute the checksum
     # for the eventual header
     header_for_checksum: bytes = struct.pack(
         "!BBHHH",
-        ICMPTypes.ECHO_MESSAGE,
+        icmp_type,
         ICMP_ECHO_MESSAGE_CODE,
         initial_checksum,
         identifier,
         sequence_number,
     )
-    checksum = _compute_icmp_checksum(bytes(header_for_checksum) + packet_data)
+    checksum: int = _compute_icmp_checksum(bytes(header_for_checksum) + packet_data)
     header: bytes = struct.pack(
         "!BBHHH",
-        ICMPTypes.ECHO_MESSAGE,
+        icmp_type,
         ICMP_ECHO_MESSAGE_CODE,
         checksum,
         identifier,
@@ -81,5 +95,5 @@ def create_icmp_echo_message(
 
 
 def get_icmp_header_values(icmp_message: bytes) -> ICMPCodeType:
-    icmp_type, icmp_code, _, _, _ = struct.unpack("!BBHHH", icmp_message)
+    icmp_type, icmp_code = struct.unpack("!BB", icmp_message)
     return {"code": icmp_code, "type": icmp_type}
