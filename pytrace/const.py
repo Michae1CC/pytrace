@@ -8,5 +8,3 @@ DEFAULT_PAUSE_TIME_MSEC: Final[int] = 0
 DEFAULT_MAX_TTL: Final[int] = socket.socket(
     socket.AF_INET, socket.SOCK_DGRAM
 ).getsockopt(socket.IPPROTO_IP, socket.IP_TTL)
-ICMP_PORT: Final[int] = 1
-ICMP_PORT_IPV6: Final[int] = 58

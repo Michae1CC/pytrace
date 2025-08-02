@@ -12,8 +12,6 @@ from pytrace.const import DEFAULT_MAX_TTL
 from pytrace.const import DEFAULT_NUMBER_OF_QUERIES
 from pytrace.const import DEFAULT_RESPONSE_WAIT_TIME_SEC
 from pytrace.const import DEFAULT_PAUSE_TIME_MSEC
-from pytrace.const import ICMP_PORT
-from pytrace.const import ICMP_PORT_IPV6
 
 from ._icmp import ICMPTypes
 from ._icmp import ICMPv6Types
@@ -55,6 +53,9 @@ def _send_pings(
 
             got_to_dest: bool = False
 
+            if src_addr is not None:
+                sock.bind((src_addr, 0))
+
             sock.settimeout(wait_time)
             # Set the time-to-live of the ip packet
             if is_ipv6(address_family):
@@ -84,7 +85,7 @@ def _send_pings(
                 packet_sent_time: float = time.perf_counter()
 
                 if is_ipv6(address_family):
-                    sock.sendto(bytes(icmp_echo_message), (host, ICMP_PORT_IPV6, 0, 0))
+                    sock.sendto(bytes(icmp_echo_message), (host, 0, 0, 0))
                 else:
                     # Ports are not used for ICMP messages, just use a port of 0
                     sock.sendto(bytes(icmp_echo_message), (host, 0))
@@ -257,22 +258,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args()
 
     src_addr: str | None = args.src_addr
+
+    host_ip_addr: str = (
+        args.host if is_ip_address(args.host) else get_host_ip_addr(args.host)
+    )
+
     try:
-        address_family = socket.AF_INET6
-        # address_family: socket.AddressFamily = (
-        #     socket.AF_INET
-        #     if src_addr is None
-        #     else get_address_family_from_ip_address(src_addr)
-        # )
+        address_family: socket.AddressFamily = get_address_family_from_ip_address(
+            host_ip_addr
+        )
     except ValueError:
         parser.print_help()
         sys.exit(1)
-
-    host_ip_addr: str = (
-        args.host
-        if is_ip_address(args.host)
-        else get_host_ip_addr(args.host, address_family)
-    )
 
     _send_pings(
         address_family=address_family,

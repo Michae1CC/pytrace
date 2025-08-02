@@ -8,9 +8,6 @@ def get_address_family_from_ip_address(ip_address: str) -> socket.AddressFamily:
 
     parsed_address = ipaddress.ip_address(ip_address)
 
-    print(parsed_address)
-    print(type(parsed_address))
-
     if isinstance(parsed_address, ipaddress.IPv4Address):
         return socket.AF_INET
     elif isinstance(parsed_address, ipaddress.IPv6Address):
@@ -25,7 +22,7 @@ def get_dns_name_from_ip_address(ip_address: str) -> str:
     return host_dns_name
 
 
-def get_host_ip_addr(host: str, family: socket.AddressFamily) -> str:
+def get_host_ip_addr(host: str) -> str:
     addr_info = cast(
         list[tuple[socket.AddressFamily, socket.SocketKind, int, str, tuple[str, int]]],
         socket.getaddrinfo(host, 0, family=socket.AF_INET),
