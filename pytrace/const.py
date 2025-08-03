@@ -9,4 +9,4 @@ DEFAULT_PAUSE_TIME_MSEC: Final[int] = 0
 DEFAULT_MAX_TTL: Final[int] = socket.socket(
     socket.AF_INET, socket.SOCK_DGRAM
 ).getsockopt(socket.IPPROTO_IP, socket.IP_TTL)
-PROGRAM_NAME: Final[Literal["pytrace"]] = "pytrace"
+PROGRAM_NAME: Literal["pytrace"] = "pytrace"

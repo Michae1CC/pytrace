@@ -16,6 +16,8 @@ from pytrace.const import DEFAULT_RESPONSE_WAIT_TIME_SEC
 from pytrace.const import DEFAULT_PAUSE_TIME_MSEC
 from pytrace.const import PROGRAM_NAME
 
+from ._icmp import ICMPDestinationUnreachableCodes
+from ._icmp import ICMPv6DestinationUnreachableCodes
 from ._icmp import ICMPTypes
 from ._icmp import ICMPv6Types
 from ._icmp import create_icmp_echo_message
@@ -25,14 +27,12 @@ from ._ip import get_address_family_from_address
 from ._ip import get_dns_name_from_address
 from ._ip import get_host_address
 from ._ip import is_ip_address
-from ._ip import is_ipv6
 
 
 class ValidationError(RuntimeError): ...
 
 
 def _send_pings(
-    address_family: socket.AddressFamily,
     first_ttl: int,
     max_ttl: int,
     n_queries: int,
@@ -43,13 +43,11 @@ def _send_pings(
     host_address: str,
     src_address: str | None,
 ) -> None:
-    icmp_protocol: int = (
-        socket.IPPROTO_ICMPV6 if is_ipv6(address_family) else socket.IPPROTO_ICMP
-    )
-    ip_protocol: int = (
-        socket.IPPROTO_IPV6 if is_ipv6(address_family) else socket.IPPROTO_IP
-    )
-    ip_header_size: int = 40 if is_ipv6(address_family) else 20
+    address_family: socket.AddressFamily = get_address_family_from_address(host_address)
+    is_using_ipv6: bool = address_family == socket.AddressFamily.AF_INET6
+    icmp_protocol: int = socket.IPPROTO_ICMPV6 if is_using_ipv6 else socket.IPPROTO_ICMP
+    ip_protocol: int = socket.IPPROTO_IPV6 if is_using_ipv6 else socket.IPPROTO_IP
+    ip_header_size: int = 40 if is_using_ipv6 else 20
     icmp_echo_message_reply_header_size = 8
 
     print(
@@ -61,6 +59,7 @@ def _send_pings(
 
         for ttl in range(first_ttl, max_ttl + 1):
 
+            unreachable: int = 0
             got_to_dest: bool = False
 
             if src_address is not None:
@@ -83,7 +82,7 @@ def _send_pings(
                         - icmp_echo_message_reply_header_size
                     )
                     * b"\x00",
-                    family=address_family,
+                    is_using_ipv6=is_using_ipv6,
                 )
 
                 if probe_num != 0:
@@ -92,14 +91,14 @@ def _send_pings(
                 packet_sent_time: float = time.perf_counter()
 
                 # Ports are not used for ICMP messages, just use a port of 0
-                if is_ipv6(address_family):
+                if is_using_ipv6:
                     sock.sendto(bytes(icmp_echo_message), (host_address, 0, 0, 0))
                 else:
                     sock.sendto(bytes(icmp_echo_message), (host_address, 0))
 
                 try:
                     (returned_data, response_server_address) = sock.recvfrom(1024)
-                    if is_ipv6(address_family):
+                    if is_using_ipv6:
                         (response_server_ip_address, _, _, _) = response_server_address
                     else:
                         (
@@ -128,6 +127,9 @@ def _send_pings(
                         returned_data[0:2]
                     )
 
+                icmp_type: int = icmp_response_header_values["type"]
+                icmp_code: int = icmp_response_header_values["code"]
+
                 src_dns_name: str = get_dns_name_from_address(
                     response_server_ip_address
                 )
@@ -136,33 +138,97 @@ def _send_pings(
                 if probe_num == 0:
                     print(
                         f"{src_display_name} ({response_server_ip_address})",
-                        end="  ",
+                        end=" ",
                     )
 
                 print(
                     "{:.3f} ms".format(
                         (packet_received_time - packet_sent_time) * 1000
                     ),
-                    end="  ",
+                    end=" ",
                     flush=True,
                 )
 
-                if is_ipv6(address_family):
-                    if (
-                        icmp_response_header_values["type"]
-                        == ICMPv6Types.ECHO_REPLY_MESSAGE
-                    ):
-                        got_to_dest = True
+                if is_using_ipv6:
+                    match icmp_type:
+                        case ICMPv6Types.ECHO_REPLY_MESSAGE:
+                            got_to_dest = True
+                        case ICMPv6Types.TIME_TO_EXCEEDED:
+                            continue
+                        case ICMPv6Types.DESTINATION_UNREACHABLE:
+                            match icmp_code:
+                                case ICMPv6DestinationUnreachableCodes.PORT_UNREACHABLE:
+                                    got_to_dest = True
+                                case ICMPv6DestinationUnreachableCodes.NO_ROUTE:
+                                    print("!N", end=" ", flush=True)
+                                    unreachable += 1
+                                case (
+                                    ICMPv6DestinationUnreachableCodes.ADDRESS_UNREACHABLE
+                                ):
+                                    print("!H", end=" ", flush=True)
+                                    unreachable += 1
+                                case (
+                                    ICMPv6DestinationUnreachableCodes.DEST_ADMINISTRATIVELY_PROHIBITED
+                                ):
+                                    print("!S", end=" ", flush=True)
+                                    unreachable += 1
+                                case _:
+                                    print(f"!<{icmp_code}>", end=" ", flush=True)
+                                    unreachable += 1
                 else:
-                    if (
-                        icmp_response_header_values["type"]
-                        == ICMPTypes.ECHO_REPLY_MESSAGE
-                    ):
-                        got_to_dest = True
+                    match icmp_type:
+                        case ICMPTypes.ECHO_REPLY_MESSAGE:
+                            got_to_dest = True
+                        case ICMPTypes.TIME_TO_EXCEEDED:
+                            continue
+                        case ICMPTypes.DESTINATION_UNREACHABLE:
+                            match icmp_code:
+                                case ICMPDestinationUnreachableCodes.NET_UNREACHABLE:
+                                    print("!N", end=" ", flush=True)
+                                    unreachable += 1
+                                case ICMPDestinationUnreachableCodes.HOST_UNREACHABLE:
+                                    print("!H", end=" ", flush=True)
+                                    unreachable += 1
+                                case (
+                                    ICMPDestinationUnreachableCodes.PROTOCOL_UNREACHABLE
+                                ):
+                                    print("!P", end=" ", flush=True)
+                                    got_to_dest = True
+                                case (
+                                    ICMPDestinationUnreachableCodes.FRAGMENTATION_NEEDED
+                                ):
+                                    print(" !F", end=" ", flush=True)
+                                    unreachable += 1
+                                case (
+                                    ICMPDestinationUnreachableCodes.DEST_HOST_UNKNOWN
+                                    | ICMPDestinationUnreachableCodes.DEST_NETWORK_UNKNOWN
+                                ):
+                                    print(" !U", end=" ", flush=True)
+                                    unreachable += 1
+                                case (
+                                    ICMPDestinationUnreachableCodes.SOURCE_ROUTE_FAILED
+                                ):
+                                    print(" !S", end=" ", flush=True)
+                                    unreachable += 1
+                                case ICMPDestinationUnreachableCodes.NETWORK_PROHIBITED:
+                                    print(" !A", end=" ", flush=True)
+                                    unreachable += 1
+                                case (
+                                    ICMPDestinationUnreachableCodes.HOST_PRECEDENCE_VIOLATION
+                                ):
+                                    print(" !V", end=" ", flush=True)
+                                    unreachable += 1
+                                case ICMPDestinationUnreachableCodes.PRECEDENCE_CUTOFF:
+                                    print(" !C", end=" ", flush=True)
+                                    unreachable += 1
+                                case _:
+                                    print(f" !<{icmp_code}>", end=" ", flush=True)
+                                    unreachable += 1
+                print(" ", end="", flush=True)
 
             print()
 
-            if got_to_dest:
+            if got_to_dest or (unreachable > 0 and unreachable >= n_queries - 1):
                 break
 
 
@@ -194,7 +260,7 @@ def _validate_arguments(
     if not (packet_length_min_value <= packet_length):
         raise ValidationError(f"packet_length must be >= {packet_length_min_value}")
 
-    first_ttl_max_value: int = 255
+    first_ttl_max_value: Final[int] = 255
     if not (first_ttl <= first_ttl_max_value):
         raise ValidationError(f"first ttl must be <= {first_ttl_max_value}")
 
@@ -346,6 +412,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     src_address_family = (
         None if src_address is None else get_address_family_from_address(src_address)
     )
+    # This should be used to query the host address name
     host_address_family: socket.AddressFamily = get_address_family_from_address(
         host_address
     )
@@ -355,7 +422,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         sys.exit(1)
 
     _send_pings(
-        address_family=host_address_family,
         first_ttl=first_ttl,
         max_ttl=max_ttl,
         n_queries=n_queries,

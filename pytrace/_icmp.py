@@ -7,11 +7,10 @@ from typing import TypedDict
 
 from enum import IntEnum
 
-from ._ip import is_ipv6
-
 
 class ICMPTypes(IntEnum):
     ECHO_REPLY_MESSAGE = 0
+    DESTINATION_UNREACHABLE = 3
     SOURCE_QUENCH_MESSAGE = 4
     REDIRECT_MESSAGE = 5
     ECHO_MESSAGE = 8
@@ -23,9 +22,32 @@ class ICMPTypes(IntEnum):
     INFORMATION_REPLY_MESSAGE = 16
 
 
+class ICMPDestinationUnreachableCodes:
+    NET_UNREACHABLE = 0
+    HOST_UNREACHABLE = 1
+    PROTOCOL_UNREACHABLE = 2
+    FRAGMENTATION_NEEDED = 4
+    SOURCE_ROUTE_FAILED = 5
+    DEST_NETWORK_UNKNOWN = 6
+    DEST_HOST_UNKNOWN = 7
+    NETWORK_PROHIBITED = 9
+    HOST_PRECEDENCE_VIOLATION = 14
+    PRECEDENCE_CUTOFF = 15
+
+
 class ICMPv6Types(IntEnum):
+    DESTINATION_UNREACHABLE = 1
+    TIME_TO_EXCEEDED = 3
     ECHO_REPLY_MESSAGE = 128
     ECHO_MESSAGE = 129
+
+
+class ICMPv6DestinationUnreachableCodes:
+    NO_ROUTE = 0
+    DEST_ADMINISTRATIVELY_PROHIBITED = 1
+    ADDRESS_UNREACHABLE = 3
+    PORT_UNREACHABLE = 4
+    SRC_ADDRESS_FAIL = 5
 
 
 class ICMPCodeType(TypedDict):
@@ -65,11 +87,11 @@ def create_icmp_echo_message(
     identifier: int,
     sequence_number: int,
     packet_data: bytes,
-    family: socket.AddressFamily,
+    is_using_ipv6: bool,
 ) -> bytes:
     ICMP_ECHO_MESSAGE_CODE: Final[int] = 0
     icmp_type: ICMPTypes | ICMPv6Types = (
-        ICMPv6Types.ECHO_MESSAGE if is_ipv6(family) else ICMPTypes.ECHO_MESSAGE
+        ICMPv6Types.ECHO_MESSAGE if is_using_ipv6 else ICMPTypes.ECHO_MESSAGE
     )
     initial_checksum: int = 0
     # Create a header with the checksum value set to 0 to compute the checksum

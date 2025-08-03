@@ -52,8 +52,3 @@ def is_ip_address(value: str) -> bool:
         return False
 
     return True
-
-
-def is_ipv6(family: socket.AddressFamily) -> bool:
-
-    return family == socket.AddressFamily.AF_INET6
