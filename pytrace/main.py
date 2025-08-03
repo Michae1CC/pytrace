@@ -6,66 +6,73 @@ import struct
 import sys
 import time
 
+from typing import Final
+
 from collections.abc import Sequence
 
 from pytrace.const import DEFAULT_MAX_TTL
 from pytrace.const import DEFAULT_NUMBER_OF_QUERIES
 from pytrace.const import DEFAULT_RESPONSE_WAIT_TIME_SEC
 from pytrace.const import DEFAULT_PAUSE_TIME_MSEC
+from pytrace.const import PROGRAM_NAME
 
 from ._icmp import ICMPTypes
 from ._icmp import ICMPv6Types
 from ._icmp import create_icmp_echo_message
 from ._icmp import get_icmp_header_values
 
-from ._ip import get_address_family_from_ip_address
-from ._ip import get_dns_name_from_ip_address
-from ._ip import get_host_ip_addr
+from ._ip import get_address_family_from_address
+from ._ip import get_dns_name_from_address
+from ._ip import get_host_address
 from ._ip import is_ip_address
 from ._ip import is_ipv6
+
+
+class ValidationError(RuntimeError): ...
 
 
 def _send_pings(
     address_family: socket.AddressFamily,
     first_ttl: int,
     max_ttl: int,
-    nqueries: int,
+    n_queries: int,
     wait_time: int,
     pause_msec: int,
-    host: str,
     packet_length: int,
-    src_addr: str | None,
+    host: str,
+    host_address: str,
+    src_address: str | None,
 ) -> None:
-    socket_protocol: int = (
+    icmp_protocol: int = (
         socket.IPPROTO_ICMPV6 if is_ipv6(address_family) else socket.IPPROTO_ICMP
+    )
+    ip_protocol: int = (
+        socket.IPPROTO_IPV6 if is_ipv6(address_family) else socket.IPPROTO_IP
     )
     ip_header_size: int = 40 if is_ipv6(address_family) else 20
     icmp_echo_message_reply_header_size = 8
 
     print(
-        f"pytrace to {host} ({host}), {max_ttl} hops max, {packet_length} bytes packets"
+        f"pytrace to {host_address} ({host}), {max_ttl} hops max, {packet_length} byte packets"
     )
 
     # Create the socket
-    with socket.socket(address_family, socket.SOCK_RAW, socket_protocol) as sock:
+    with socket.socket(address_family, socket.SOCK_RAW, icmp_protocol) as sock:
 
         for ttl in range(first_ttl, max_ttl + 1):
 
             got_to_dest: bool = False
 
-            if src_addr is not None:
-                sock.bind((src_addr, 0))
+            if src_address is not None:
+                sock.bind((src_address, 0))
 
             sock.settimeout(wait_time)
             # Set the time-to-live of the ip packet
-            if is_ipv6(address_family):
-                sock.setsockopt(socket.IPPROTO_IPV6, socket.IP_TTL, ttl)
-            else:
-                sock.setsockopt(socket.IPPROTO_IP, socket.IP_TTL, ttl)
+            sock.setsockopt(ip_protocol, socket.IP_TTL, ttl)
 
             print(f"{ttl}", end="  ")
 
-            for probe_num in range(nqueries):
+            for probe_num in range(n_queries):
 
                 icmp_echo_message: bytes = create_icmp_echo_message(
                     identifier=1 + probe_num,
@@ -84,11 +91,11 @@ def _send_pings(
 
                 packet_sent_time: float = time.perf_counter()
 
+                # Ports are not used for ICMP messages, just use a port of 0
                 if is_ipv6(address_family):
-                    sock.sendto(bytes(icmp_echo_message), (host, 0, 0, 0))
+                    sock.sendto(bytes(icmp_echo_message), (host_address, 0, 0, 0))
                 else:
-                    # Ports are not used for ICMP messages, just use a port of 0
-                    sock.sendto(bytes(icmp_echo_message), (host, 0))
+                    sock.sendto(bytes(icmp_echo_message), (host_address, 0))
 
                 try:
                     (returned_data, response_server_address) = sock.recvfrom(1024)
@@ -121,7 +128,7 @@ def _send_pings(
                         returned_data[0:2]
                     )
 
-                src_dns_name: str = get_dns_name_from_ip_address(
+                src_dns_name: str = get_dns_name_from_address(
                     response_server_ip_address
                 )
                 src_display_name: str = src_dns_name or response_server_ip_address
@@ -159,6 +166,54 @@ def _send_pings(
                 break
 
 
+def _log_program_error(message: str) -> None:
+    print(f"{PROGRAM_NAME}: {message}", file=sys.stderr)
+
+
+def _validate_arguments(
+    first_ttl: int,
+    max_ttl: int,
+    n_queries: int,
+    wait_time: int,
+    pause_msec: int,
+    packet_length: int,
+    src_address: str | None,
+) -> None:
+
+    for value, human_readable_name in zip(
+        [first_ttl, max_ttl, n_queries, wait_time],
+        ["first ttl", "max ttl", "nprobes", "wait time"],
+    ):
+        if not (0 < value):
+            raise ValidationError(f"{human_readable_name} must be > 0")
+
+    if not (0 <= pause_msec):
+        raise ValidationError(f"pause msecs must be >= 0")
+
+    packet_length_min_value: Final[int] = 28
+    if not (packet_length_min_value <= packet_length):
+        raise ValidationError(f"packet_length must be >= {packet_length_min_value}")
+
+    first_ttl_max_value: int = 255
+    if not (first_ttl <= first_ttl_max_value):
+        raise ValidationError(f"first ttl must be <= {first_ttl_max_value}")
+
+    max_ttl_max_value: Final[int] = 255
+    if not (max_ttl <= max_ttl_max_value):
+        raise ValidationError(f"max ttl must be <= {max_ttl_max_value}")
+
+    wait_time_max_value_seconds: Final[int] = 60 * 60 * 24
+    if not (wait_time <= wait_time_max_value_seconds):
+        raise ValidationError(f"wait time must be <= {wait_time_max_value_seconds}")
+
+    packet_length_max_value: Final[int] = 32_768
+    if not (packet_length <= packet_length_max_value):
+        raise ValidationError(f"packet length must be <= {packet_length_max_value}")
+
+    if src_address is not None and not is_ip_address(src_address):
+        raise ValidationError("src addr must be an IPv4 or IPv6 address")
+
+
 def main(argv: Sequence[str] | None = None) -> None:
 
     # python -m pytrace -q 1 -w 1 '2404:6800:4006:814::200e'
@@ -166,7 +221,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     # 128.32.131.22
 
     argv = argv if argv is not None else sys.argv[1:]
-    parser = argparse.ArgumentParser(prog="pytrace")
+    parser = argparse.ArgumentParser(prog=PROGRAM_NAME)
 
     parser.add_argument(
         "-s",
@@ -182,7 +237,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         ),
         default=None,
         metavar="src_addr",
-        dest="src_addr",
+        dest="src_address",
     )
 
     parser.add_argument(
@@ -218,7 +273,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         ),
         default=f"{DEFAULT_NUMBER_OF_QUERIES}",
         metavar="nqueries",
-        dest="nqueries",
+        dest="n_queries",
     )
 
     parser.add_argument(
@@ -252,33 +307,62 @@ def main(argv: Sequence[str] | None = None) -> None:
         "packet_length",
         nargs="?",
         type=int,
-        default=48,
+        default=40,
     )
 
     args = parser.parse_args()
 
-    src_addr: str | None = args.src_addr
-
-    host_ip_addr: str = (
-        args.host if is_ip_address(args.host) else get_host_ip_addr(args.host)
-    )
+    first_ttl: Final[int] = args.first_ttl
+    max_ttl: Final[int] = args.max_ttl
+    n_queries: Final[int] = args.n_queries
+    wait_time: Final[int] = args.wait_time
+    pause_msecs: Final[int] = args.pause_msecs
+    packet_length: Final[int] = args.packet_length
+    host: Final[str] = args.host
+    src_address: Final[str | None] = args.src_address
 
     try:
-        address_family: socket.AddressFamily = get_address_family_from_ip_address(
-            host_ip_addr
+        host_address: Final[str] = (
+            host if is_ip_address(args.host) else get_host_address(args.host)
         )
     except ValueError:
-        parser.print_help()
+        _log_program_error(f"unknown host {host}")
+        sys.exit(1)
+
+    try:
+        _validate_arguments(
+            first_ttl=first_ttl,
+            max_ttl=max_ttl,
+            n_queries=n_queries,
+            wait_time=wait_time,
+            pause_msec=pause_msecs,
+            packet_length=packet_length,
+            src_address=src_address,
+        )
+    except ValidationError as e:
+        _log_program_error(str(e))
+        sys.exit(1)
+
+    src_address_family = (
+        None if src_address is None else get_address_family_from_address(src_address)
+    )
+    host_address_family: socket.AddressFamily = get_address_family_from_address(
+        host_address
+    )
+
+    if src_address_family is not None and src_address_family != host_address_family:
+        _log_program_error(f"src address family and host address family do not match")
         sys.exit(1)
 
     _send_pings(
-        address_family=address_family,
-        first_ttl=args.first_ttl,
-        max_ttl=args.max_ttl,
-        nqueries=args.nqueries,
-        wait_time=args.wait_time,
-        pause_msec=args.pause_msecs,
-        host=host_ip_addr,
-        packet_length=args.packet_length,
-        src_addr=src_addr,
+        address_family=host_address_family,
+        first_ttl=first_ttl,
+        max_ttl=max_ttl,
+        n_queries=n_queries,
+        wait_time=wait_time,
+        pause_msec=pause_msecs,
+        packet_length=packet_length,
+        host=host,
+        host_address=host_address,
+        src_address=src_address,
     )
