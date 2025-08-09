@@ -97,6 +97,7 @@ def _send_pings(
                     sock.sendto(bytes(icmp_echo_message), (host_address, 0))
 
                 try:
+                    # TODO: Make sure recv from value is big enough
                     (returned_data, response_server_address) = sock.recvfrom(1024)
                     if is_using_ipv6:
                         (response_server_ip_address, _, _, _) = response_server_address
@@ -197,32 +198,32 @@ def _send_pings(
                                 case (
                                     ICMPDestinationUnreachableCodes.FRAGMENTATION_NEEDED
                                 ):
-                                    print(" !F", end=" ", flush=True)
+                                    print("!F", end=" ", flush=True)
                                     unreachable += 1
                                 case (
                                     ICMPDestinationUnreachableCodes.DEST_HOST_UNKNOWN
                                     | ICMPDestinationUnreachableCodes.DEST_NETWORK_UNKNOWN
                                 ):
-                                    print(" !U", end=" ", flush=True)
+                                    print("!U", end=" ", flush=True)
                                     unreachable += 1
                                 case (
                                     ICMPDestinationUnreachableCodes.SOURCE_ROUTE_FAILED
                                 ):
-                                    print(" !S", end=" ", flush=True)
+                                    print("!S", end=" ", flush=True)
                                     unreachable += 1
                                 case ICMPDestinationUnreachableCodes.NETWORK_PROHIBITED:
-                                    print(" !A", end=" ", flush=True)
+                                    print("!A", end=" ", flush=True)
                                     unreachable += 1
                                 case (
                                     ICMPDestinationUnreachableCodes.HOST_PRECEDENCE_VIOLATION
                                 ):
-                                    print(" !V", end=" ", flush=True)
+                                    print("!V", end=" ", flush=True)
                                     unreachable += 1
                                 case ICMPDestinationUnreachableCodes.PRECEDENCE_CUTOFF:
-                                    print(" !C", end=" ", flush=True)
+                                    print("!C", end=" ", flush=True)
                                     unreachable += 1
                                 case _:
-                                    print(f" !<{icmp_code}>", end=" ", flush=True)
+                                    print(f"!<{icmp_code}>", end=" ", flush=True)
                                     unreachable += 1
                 print(" ", end="", flush=True)
 
