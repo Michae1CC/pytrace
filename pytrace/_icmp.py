@@ -87,7 +87,8 @@ def create_icmp_echo_message(
     identifier: int,
     sequence_number: int,
     packet_data: bytes,
-    is_using_ipv6: bool,
+    *,
+    is_using_ipv6: bool = False,
 ) -> bytes:
     ICMP_ECHO_MESSAGE_CODE: Final[int] = 0
     icmp_type: ICMPTypes | ICMPv6Types = (

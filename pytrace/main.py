@@ -253,9 +253,21 @@ def _run(args: argparse.Namespace) -> int:
     wait_time_max_value_seconds: Final[int] = 60 * 60 * 24
     packet_length_max_value: Final[int] = 32_768
 
+    if src_address is not None and not is_ip_address(src_address):
+        _log_program_error(("src addr must be an IPv4 or IPv6 address"))
+        return 1
+
+    src_address_family = (
+        None if src_address is None else get_address_family_from_address(src_address)
+    )
+
     try:
         host_address: Final[str] = (
-            host if is_ip_address(args.host) else get_host_address(args.host)
+            host
+            if is_ip_address(args.host)
+            else get_host_address(
+                args.host, is_using_ipv6=src_address_family == socket.AF_INET6
+            )
         )
     except ValueError:
         _log_program_error(f"unknown host {host}")
@@ -293,14 +305,6 @@ def _run(args: argparse.Namespace) -> int:
         _log_program_error((f"packet length must be <= {packet_length_max_value}"))
         return 1
 
-    if src_address is not None and not is_ip_address(src_address):
-        _log_program_error(("src addr must be an IPv4 or IPv6 address"))
-        return 1
-
-    src_address_family = (
-        None if src_address is None else get_address_family_from_address(src_address)
-    )
-
     # This should be used to query the host address name
     host_address_family: socket.AddressFamily = get_address_family_from_address(
         host_address
@@ -308,7 +312,7 @@ def _run(args: argparse.Namespace) -> int:
 
     if src_address_family is not None and src_address_family != host_address_family:
         _log_program_error(f"src address family and host address family do not match")
-        sys.exit(1)
+        return 1
 
     _send_pings(
         first_ttl=first_ttl,
@@ -326,10 +330,6 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-
-    # python -m pytrace -q 1 -w 1 '2404:6800:4006:814::200e'
-    # python -m pytrace -q 1 -w 1 128.32.131.22
-    # 128.32.131.22
 
     argv = argv if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(prog=PROGRAM_NAME)

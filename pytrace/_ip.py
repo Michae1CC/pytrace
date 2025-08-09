@@ -22,7 +22,11 @@ def get_dns_name_from_address(ip_address: str) -> str:
     return host_dns_name
 
 
-def get_host_address(hostname: str) -> str:
+def get_host_address(
+    hostname: str,
+    *,
+    is_using_ipv6: bool = False,
+) -> str:
     try:
         address_info = cast(
             list[
@@ -30,7 +34,9 @@ def get_host_address(hostname: str) -> str:
                     socket.AddressFamily, socket.SocketKind, int, str, tuple[str, int]
                 ]
             ],
-            socket.getaddrinfo(hostname, 0, family=socket.AF_INET),
+            socket.getaddrinfo(
+                hostname, 0, family=socket.AF_INET6 if is_using_ipv6 else socket.AF_INET
+            ),
         )
     except socket.gaierror as e:
         raise ValueError("Bad hostname provided", e)
