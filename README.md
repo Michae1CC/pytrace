@@ -31,11 +31,3 @@ options:
                  systems such as Solaris and routers such as Ciscos rate limit ICMP
                  messages. A good value to use with this is 500 (e.g. 1/2 second).
 ```
-
-## References
-
-- <https://docs.python.org/3/library/socket.html>
-- <https://datatracker.ietf.org/doc/html/rfc1700>
-- <https://fossies.org/linux/traceroute/traceroute/traceroute.c>
-- <https://pymotw.com/2/socket/tcp.html>
-- <https://fossies.org/linux/traceroute/traceroute/traceroute.c>
