@@ -47,9 +47,10 @@ def _send_pings(
     ip_protocol: int = socket.IPPROTO_IPV6 if is_using_ipv6 else socket.IPPROTO_IP
     ip_header_size: int = 40 if is_using_ipv6 else 20
     icmp_echo_message_reply_header_size = 8
+    num_digits_max_ttl: int = len(str(max_ttl))
 
     print(
-        f"pytrace to {host_address} ({host}), {max_ttl} hops max, {packet_length} byte packets"
+        f"pytrace to {host} ({host_address}), {max_ttl} hops max, {packet_length} byte packets"
     )
 
     # Create the socket
@@ -67,7 +68,7 @@ def _send_pings(
             # Set the time-to-live of the ip packet
             sock.setsockopt(ip_protocol, socket.IP_TTL, ttl)
 
-            print(f"{ttl}", end="  ")
+            print(f"{ttl}".rjust(num_digits_max_ttl), end="  ")
 
             for probe_num in range(n_queries):
 
